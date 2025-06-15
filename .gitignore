@@ -31,4 +31,5 @@
 *.out
 *.app
 
-run.sh
+/build/*
+!/build/.gitkeep
