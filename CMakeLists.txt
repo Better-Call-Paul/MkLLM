@@ -8,16 +8,31 @@ include_directories(
     ${CMAKE_SOURCE_DIR}/engine/include
 )
 
-file(GLOB_RECURSE CUDA_SOURCES
+# Main 
+file(GLOB_RECURSE APP_SOURCES
     ${CMAKE_SOURCE_DIR}/engine/src/*.cu
-    ${CMAKE_SOURCE_DIR}/engine/kernels/*.cu
 )
 
 add_executable(mkllm
-    ${CUDA_SOURCES}
+    ${APP_SOURCES}
 )
 
 set_target_properties(mkllm PROPERTIES
+    CUDA_ARCHITECTURES 80
+    CUDA_SEPARABLE_COMPILATION ON
+)
+
+# MatMul benchmarking
+file(GLOB KERNEL_SOURCES
+    ${CMAKE_SOURCE_DIR}/engine/kernels/*.cu
+    ${CMAKE_SOURCE_DIR}/engine/src/cuda_utils.cu
+)
+
+add_executable(matmul_bench
+    ${KERNEL_SOURCES}
+)
+
+set_target_properties(matmul_bench PROPERTIES
     CUDA_ARCHITECTURES 80
     CUDA_SEPARABLE_COMPILATION ON
 )

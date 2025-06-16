@@ -31,5 +31,11 @@
 *.out
 *.app
 
+
+#vim
+*.swp
+*.swo
+*.swn
+
 /build/*
 !/build/.gitkeep
