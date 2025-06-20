@@ -10,6 +10,12 @@ cd ~/devlibs
 apt-get update
 apt-get install -y cmake git curl build-essential
 
+apt-get install -y linux-tools-common linux-tools-generic linux-tools-`uname -r`
+
+if [ ! -d "FlameGraph" ]; then
+  git clone https://github.com/brendangregg/FlameGraph.git
+fi
+
 apt-get install -y \
     cuda-toolkit-12-6 \
     libcublas-dev-12-6 \
