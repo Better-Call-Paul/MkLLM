@@ -2,6 +2,7 @@
 
 #include "../cuda_common.cuh"
 
+
 __global__ void basic_sgemm(float* A, float* B, float* C, int M, int N, int K)
 {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -18,4 +19,3 @@ __global__ void basic_sgemm(float* A, float* B, float* C, int M, int N, int K)
     }
     C[x * N + y] = sum;
 }
-

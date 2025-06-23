@@ -106,20 +106,37 @@ inline void printMatrix(const T* a, int m, int n, std::ofstream& fs)
 }
 
 template<typename T>
-inline bool verifyMatrix(const T* ref, const T* out, int n)
+inline bool verifyMatrix(const T* ref, const T* out, int M, int N, const std::string& log_file = "")
 {
-    for (int i = 0; i < n; ++i)
+    std::ofstream log;
+    if (!log_file.empty()) {
+        log.open(log_file);
+    }
+
+    bool pass = true;
+    for (int i = 0; i < M * N; ++i)
     {
-        if (std::fabs(ref[i] - out[i]) > static_cast<T>(1e-2))
+        T diff = std::fabs(ref[i] - out[i]);
+        if (diff > static_cast<T>(1e-2))
         {
-            std::cerr << "Mismatch at " << i
-                      << ": " << ref[i]
-                      << " vs "  << out[i] << "\n";
-            return false;
+            int row = i / N;
+            int col = i % N;
+
+            std::cerr << "Mismatch at (" << row << ", " << col << "): "
+                      << ref[i] << " vs " << out[i] << " [diff=" << diff << "]\n";
+
+            if (log.is_open()) {
+                log << "Mismatch at (" << row << ", " << col << "): "
+                    << ref[i] << " vs " << out[i] << " [diff=" << diff << "]\n";
+            }
+
+            pass = false;
         }
     }
 
-    return true;
+    if (log.is_open()) log.close();
+    return pass;
 }
+
 
 }
