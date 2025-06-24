@@ -4,7 +4,7 @@ int main()
 {
 
     
-    Engine::cudaDeviceInfo();
+    cudaDeviceInfo();
 
     return 0;
 }

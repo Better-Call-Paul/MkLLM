@@ -1,21 +1,27 @@
 #pragma once
 
 #include "../cuda_common.cuh"
-
-
-__global__ void basic_sgemm(float* A, float* B, float* C, int M, int N, int K)
+/*
+__global__ void naive_sgemm(int M, int N, int K, float alpha, float *A, float *B, float beta, float *C)
 {
-    int x = blockIdx.x * blockDim.x + threadIdx.x;
-    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    int col = blockDim.x * blockIdx.x + threadIdx.x;
+    int row = blockDim.y * blockIdx.y + threadIdx.y;
 
-    if (x >= M || y >= N) {
+    if (col >= N || row >= M) 
+    {
         return;
     }
 
-    float sum = 0;
-
-    for (int i = 0; i < K; ++i) {
-        sum += A[x * K + i] * B[i * N + y];
+    float sum = 0.0f;
+    for (uint i = 0; i < K; ++i) {
+        sum += A[row * K + i] * B[i * N + col];
     }
-    C[x * N + y] = sum;
+    C[row * N + col] = alpha * sum + beta * C[row * N + col];
 }
+
+void run_naive_sgemm(int M, int N, int K, float alpha, float *A, float *B, float beta, float *C)
+{
+    dim3 gridDim(CEIL_DIV(N, 32), CEIL_DIV(M, 32));
+    dim3 blockDim(32, 32);
+    naive_sgemm<<<gridDim, blockDim>>>(M, N, K, alpha, A, B, beta, C);
+}*/

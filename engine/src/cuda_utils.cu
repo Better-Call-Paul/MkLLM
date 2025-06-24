@@ -1,8 +1,5 @@
 #include "cuda_utils.cuh"
 
-namespace Engine 
-{
-
 void cudaCheck(cudaError_t error, const char* file, int line)
 {
     if (error != cudaSuccess) 
@@ -37,6 +34,4 @@ void cudaDeviceInfo()
         << "Total Constant Memory: "         << (props.totalConstMem     / 1024)      << " KB\n"
         << "Multiprocessor Count: "          << props.multiProcessorCount                       << "\n"
         << "Warp Size: "                     << props.warpSize                                  << "\n";
-}
-
 }

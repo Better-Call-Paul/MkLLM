@@ -11,10 +11,7 @@
 #include <cmath>
 #include <iomanip>
 
-#define CUDA_CHECK(err) Engine::cudaCheck(err, __FILE__, __LINE__)
-
-namespace Engine
-{
+#define CUDA_CHECK(err) cudaCheck(err, __FILE__, __LINE__)
 
 void cudaCheck(cudaError_t error, const char* file, int line);
 
@@ -109,11 +106,14 @@ template<typename T>
 inline bool verifyMatrix(const T* ref, const T* out, int M, int N, const std::string& log_file = "")
 {
     std::ofstream log;
-    if (!log_file.empty()) {
+
+    if (!log_file.empty()) 
+    {
         log.open(log_file);
     }
 
     bool pass = true;
+
     for (int i = 0; i < M * N; ++i)
     {
         T diff = std::fabs(ref[i] - out[i]);
@@ -135,8 +135,6 @@ inline bool verifyMatrix(const T* ref, const T* out, int M, int N, const std::st
     }
 
     if (log.is_open()) log.close();
+
     return pass;
-}
-
-
 }

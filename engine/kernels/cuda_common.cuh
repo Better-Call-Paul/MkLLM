@@ -8,3 +8,5 @@
 #include <cuda_bf16.h>
 #include <cuda_fp8.h>
 #include <mma.h>
+
+#define CEIL_DIV(M, N) (((M) + (N) - 1) / N)

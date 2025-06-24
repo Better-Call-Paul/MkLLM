@@ -4,15 +4,14 @@ project(MkLLM LANGUAGES C CXX CUDA)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CUDA_STANDARD 17)
 
-# — use old CUDA find for CMake ≤ 3.20 —
-find_package(CUDA REQUIRED)
+# locate the CUDA Toolkit (provides CUDA::cudart, CUDA::cublas, etc.)
+find_package(CUDAToolkit REQUIRED)
 
 include_directories(
     ${CMAKE_SOURCE_DIR}/engine/include
-    ${CUDA_INCLUDE_DIRS}
 )
 
-# Main 
+# ── Main executable ────────────────────────────────────────────────────────────
 file(GLOB_RECURSE APP_SOURCES
     ${CMAKE_SOURCE_DIR}/engine/src/*.cu
 )
@@ -22,27 +21,29 @@ add_executable(mkllm
 )
 
 set_target_properties(mkllm PROPERTIES
-    CUDA_ARCHITECTURES 80
-    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_ARCHITECTURES         "80-real"
+    CUDA_SEPARABLE_COMPILATION  ON
+    CUDA_RESOLVE_DEVICE_SYMBOLS ON
 )
 
-# MatMul benchmarking
-file(GLOB KERNEL_SOURCES
+# ── MatMul benchmarking executable ─────────────────────────────────────────────
+file(GLOB BENCH_SOURCES
     ${CMAKE_SOURCE_DIR}/engine/kernels/*.cu
     ${CMAKE_SOURCE_DIR}/engine/src/cuda_utils.cu
+    ${CMAKE_SOURCE_DIR}/engine/src/matmul_runner.cu
 )
 
 add_executable(matmul_bench
-    ${KERNEL_SOURCES}
+    ${BENCH_SOURCES}
 )
 
 set_target_properties(matmul_bench PROPERTIES
-    CUDA_ARCHITECTURES 80
-    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_ARCHITECTURES         "80-real"
+    CUDA_SEPARABLE_COMPILATION  ON
+    CUDA_RESOLVE_DEVICE_SYMBOLS ON
 )
 
-# link in cuBLAS
+# link cuBLAS for your SGEMM calls
 target_link_libraries(matmul_bench
-    PRIVATE
-      ${CUDA_CUBLAS_LIBRARIES}
+    PRIVATE CUDA::cublas
 )
