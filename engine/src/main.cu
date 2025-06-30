@@ -3,8 +3,5 @@
 int main() 
 {
 
-    
-    cudaDeviceInfo();
-
     return 0;
 }
