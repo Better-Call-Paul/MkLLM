@@ -1,4 +1,3 @@
-// matmul_check.cpp
 #include <iostream>
 #include <vector>
 #include <random>
@@ -73,21 +72,79 @@ bool verifyMatrix(const float* ref, const float* out,
 inline void checkKernelLaunch(int) { }
 inline void checkKernelSync(int)  { }
 
-// CPU fallback for naive SGEMM
+
+__global__ void sgemm_naive(int M, int N, int K,
+                     float alpha, const float *A,
+                     const float *B, float beta, float *C) 
+{
+    const uint row = blockDim.y * blockIdx.y + threadIdx.y;
+    const uint col = blockDim.x * blockIdx.x + threadIdx.x;
+
+    if (row < M && col < N)
+    {
+        float sum = 0.0f;
+        for (int i = 0; i < K; ++i) {
+            sum += A[row * K + i] * B[i * N + col];
+        } 
+
+        C[row * N + col] = alpha * sum + beta * C[row * N + col];
+    }
+
+}
+
+template <const unsigned int BLOCKSIZE>
+__global__ void sgemm_global_mem_coalesce(
+    int M,
+    int N,
+    int K,
+    float alpha,
+    const float *A,
+    const float *B,
+    float beta,
+    float *C)
+{
+    const int cRow = blockIdx.x * BLOCKSIZE + (threadIdx.x / BLOCKSIZE);
+    const int cCol = blockIdx.y * BLOCKSIZE + (threadIdx.x % BLOCKSIZE);
+
+    if (cRow < M && cCol < N) {
+        float tmp = 0.0f;
+        for (int i = 0; i < K; ++i) {
+            tmp += A[cRow * K + i] * B[i * N + cCol];
+        }
+        C[cRow * N + cCol] = alpha * tmp + beta * C[cRow * N + cCol];
+    }
+}
+\
+inline void run_sgemm_coalesced(
+    int M,
+    int N,
+    int K,
+    float alpha,
+    const float *A,
+    const float *B,
+    float beta,
+    float *C)
+{
+    constexpr unsigned int BLOCKSIZE = 32;
+    dim3 blk(BLOCKSIZE, BLOCKSIZE);
+    dim3 grid(CEIL_DIV(N, BLOCKSIZE), CEIL_DIV(M, BLOCKSIZE));
+    sgemm_global_mem_coalesce<BLOCKSIZE><<<grid, blk>>>(
+        M, N, K,
+        alpha,
+        A, B,
+        beta,
+        C
+    );
+}
+
+
 void run_sgemm_naive(int M, int N, int K,
                      float alpha, const float *A,
                      const float *B, float beta, float *C) {
-    for (int i = 0; i < M; ++i) {
-        for (int j = 0; j < N; ++j) {
-            float tmp = 0.0f;
-            for (int k = 0; k < K; ++k)
-                tmp += A[i*K + k] * B[k*N + j];
-            C[i*N + j] = alpha * tmp + beta * C[i*N + j];
-        }
-    }
+    dim3 blk(32,32), grid(CEIL_DIV(N,32), CEIL_DIV(M,32));
+    sgemm_naive<<<grid,blk>>>(M,N,K,alpha,A,B,beta,C);
 }
 
-// GPU cuBLAS for reference
 void run_cublas_sgemm(cublasHandle_t handle,
                       int M, int N, int K,
                       float alpha,
@@ -124,86 +181,100 @@ void run_cublas_sgemm(cublasHandle_t handle,
     cudaFree(dB);
     cudaFree(dC);
 }
-int main() {
-    // select device
+
+int main()
+{
     int deviceIdx = 0;
     if (const char* env = std::getenv("DEVICE"))
         deviceIdx = std::atoi(env);
     CUDA_CHECK(cudaSetDevice(deviceIdx));
     std::cout << "Running on device " << deviceIdx << "\n";
 
-    // create cuBLAS handle
     cublasHandle_t handle;
     CUBLAS_CHECK(cublasCreate(&handle));
 
-    // problem sizes
     std::vector<int> sizes = {128, 256, 512, 1024};
     int max_size = sizes.back();
     size_t bytes = sizeof(float) * max_size * max_size;
 
-    // host buffers
-    std::vector<float> A(max_size*max_size),
-                       B(max_size*max_size),
-                       C(max_size*max_size),
-                       C_ref(max_size*max_size);
+    std::vector<float> A(max_size * max_size),
+                       B(max_size * max_size),
+                       C(max_size * max_size),
+                       C_ref(max_size * max_size);
 
     randomizeMatrix(A.data(), A.size());
     randomizeMatrix(B.data(), B.size());
     rangeInitMatrix(C.data(), C.size());
     std::copy(C.begin(), C.end(), C_ref.begin());
 
-    // initial correctness check
+    float *dA, *dB, *dC;
+    CUDA_CHECK(cudaMalloc((void**)&dA, bytes));
+    CUDA_CHECK(cudaMalloc((void**)&dB, bytes));
+    CUDA_CHECK(cudaMalloc((void**)&dC, bytes));
+    CUDA_CHECK(cudaMemcpy(dA, A.data(), bytes, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(dB, B.data(), bytes, cudaMemcpyHostToDevice));
+
+    float alpha = 2.0f;
+    float beta  = 3.0f;
+
     {
-        int M = sizes[0], N = M, K = M;
-        run_sgemm_naive(M, N, K, 2.0f, A.data(), B.data(), 3.0f, C.data());
-        checkKernelSync(M);
-        run_cublas_sgemm(handle, M, N, K, 2.0f, A.data(), B.data(), 3.0f, C_ref.data());
-        checkKernelSync(M);
-        if (!verifyMatrix(C_ref.data(), C.data(), M, N, error_log_file)) {
-            std::cerr << "Initial verification FAILED\n";
+        int M = sizes[0];
+        int N = M;
+        int K = M;
+        CUDA_CHECK(cudaMemcpy(dC, C.data(), sizeof(float) * M * N, cudaMemcpyHostToDevice));
+        run_sgemm_naive(M, N, K, alpha, dA, dB, beta, dC);
+        CUDA_CHECK(cudaDeviceSynchronize());
+        CUDA_CHECK(cudaMemcpy(C.data(), dC, sizeof(float) * M * N, cudaMemcpyDeviceToHost));
+        run_cublas_sgemm(handle, M, N, K, alpha, A.data(), B.data(), beta, C_ref.data());
+        if (!verifyMatrix(C_ref.data(), C.data(), M, N, error_log_file))
+        {
             return 1;
         }
-        std::cout << "Initial verify passed\n\n";
     }
 
-    // timing setup
     const int NUM_RUNS = 10;
     cudaEvent_t start, stop;
     CUDA_CHECK(cudaEventCreate(&start));
     CUDA_CHECK(cudaEventCreate(&stop));
 
-    // benchmark loop
-    for (int size : sizes) {
-        int M = size, N = size, K = size;
-        float total_naive_ms = 0.0f, total_cublas_ms = 0.0f;
+    for (int size : sizes)
+    {
+        int M = size;
+        int N = size;
+        int K = size;
+        float total_naive_ms   = 0.0f;
+        float total_cublas_ms  = 0.0f;
 
-        std::cout << "dim " << size << ", α=2, β=3\n";
+        for (int i = 0; i < NUM_RUNS; ++i)
+        {
+            CUDA_CHECK(cudaMemcpy(dC, C.data(), sizeof(float) * M * N, cudaMemcpyHostToDevice));
 
-        for (int i = 0; i < NUM_RUNS; ++i) {
-            // naive
             CUDA_CHECK(cudaEventRecord(start, 0));
-            run_sgemm_naive(M, N, K, 2.0f, A.data(), B.data(), 3.0f, C.data());
+            run_sgemm_naive(M, N, K, alpha, dA, dB, beta, dC);
             CUDA_CHECK(cudaEventRecord(stop, 0));
             CUDA_CHECK(cudaEventSynchronize(stop));
             float ms;
             CUDA_CHECK(cudaEventElapsedTime(&ms, start, stop));
             total_naive_ms += ms;
 
-            // cuBLAS
+            float cs;
             CUDA_CHECK(cudaEventRecord(start, 0));
-            run_cublas_sgemm(handle, M, N, K, 2.0f, A.data(), B.data(), 3.0f, C_ref.data());
+            run_cublas_sgemm(handle, M, N, K, alpha, A.data(), B.data(), beta, C_ref.data());
             CUDA_CHECK(cudaEventRecord(stop, 0));
             CUDA_CHECK(cudaEventSynchronize(stop));
-            CUDA_CHECK(cudaEventElapsedTime(&ms, start, stop));
-            total_cublas_ms += ms;
+            CUDA_CHECK(cudaEventElapsedTime(&cs, start, stop));
+            total_cublas_ms += cs;
         }
 
         std::cout
-            << "  avg naive:  " << (total_naive_ms  / NUM_RUNS) << " ms"
-            << " | avg cuBLAS: " << (total_cublas_ms / NUM_RUNS) << " ms\n";
+            << "dim " << size
+            << " | avg naive: " << (total_naive_ms   / NUM_RUNS) << " ms"
+            << " | avg cuBLAS: " << (total_cublas_ms  / NUM_RUNS) << " ms\n";
     }
 
-    // cleanup
+    CUDA_CHECK(cudaFree(dA));
+    CUDA_CHECK(cudaFree(dB));
+    CUDA_CHECK(cudaFree(dC));
     CUDA_CHECK(cudaEventDestroy(start));
     CUDA_CHECK(cudaEventDestroy(stop));
     CUBLAS_CHECK(cublasDestroy(handle));
