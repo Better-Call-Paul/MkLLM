@@ -103,8 +103,8 @@ __global__ void sgemm_global_mem_coalesce(
     float beta,
     float *C)
 {
-    const uint cRow = blockDim.y * BLOCKSIZE + (threadIdx.x / BLOCKSIZE);
-    const uint cCol = blockDim.x * BLOCKSIZE + (threadIdx.x % BLOCKSIZE);
+    const uint cRow = blockIdx.y * BLOCKSIZE + (threadIdx.x / BLOCKSIZE);
+    const uint cCol = blockIdx.x * BLOCKSIZE + (threadIdx.x % BLOCKSIZE);
 
     if (cRow < M && cCol < N) 
     {
@@ -113,7 +113,7 @@ __global__ void sgemm_global_mem_coalesce(
         {
             sum += A[cRow * K + i] * B[i * N + cCol];
         }
-        C[cRow * N + cCol] = alpha * sum + beta * C[cRow + N + cCol];
+        C[cRow * N + cCol] = alpha * sum + beta * C[cRow * N + cCol];
     }
 }
 
@@ -177,42 +177,43 @@ void run_cublas_sgemm(cublasHandle_t handle,
     cudaFree(dC);
 }
 
-template <const int BLOCKSIZE>
+template <const uint BLOCKSIZE>
 __global__ void sgemm_shmem_cache_blocking(int M, int N, int K, float alpha,
                                        const float *A, const float *B,
                                        float beta, float *C)
 {
-    const uint cRow = blockIdx.x;
-    const uint cCol = blockIdx.y;
+    const uint threadRow = threadIdx.x / BLOCKSIZE;
+    const uint threadCol = threadIdx.x % BLOCKSIZE;
+
+    const uint blockRow = blockIdx.y;
+    const uint blockCol = blockIdx.x;
 
     __shared__ float As[BLOCKSIZE * BLOCKSIZE];
     __shared__ float Bs[BLOCKSIZE * BLOCKSIZE];
 
-    const uint threadCol = threadIdx.x % BLOCKSIZE;
-    const uint threadRow = threadIdx.x / BLOCKSIZE;
+    // move pointers to start
+    A += blockRow * BLOCKSIZE * K;
+    B += blockCol * BLOCKSIZE;
+    C += blockRow * BLOCKSIZE * N + blockCol * BLOCKSIZE;
 
-    A += cRow * BLOCKSIZE * K;
-    B += cCol * BLOCKSIZE;
-    C += cRow * BLOCKSIZE * N + cCol * BLOCKSIZE;
-
-    float tmp = 0.0f;
-    for (int bkIdx = 0; bkIdx < K; bkIdx += BLOCKSIZE)
+    float sum = 0.0f;
+    for (uint i = 0; i < K; i += BLOCKSIZE)
     {
-        As[threadRow * BLOCKSIZE + threadCol] = A[threadRow * K + threadCol];
+        As[threadRow * BLOCKSIZE + threadCol] = A[threadRow * K + threadCol]; 
         Bs[threadRow * BLOCKSIZE + threadCol] = B[threadRow * N + threadCol];
 
         __syncthreads();
+
         A += BLOCKSIZE;
         B += BLOCKSIZE * N;
 
-        for (int dotIdx = 0; dotIdx < BLOCKSIZE; ++dotIdx)
+        for (uint dotIdx = 0; dotIdx < BLOCKSIZE; ++dotIdx)
         {
-            tmp += As[threadRow * BLOCKSIZE + dotIdx] *
-                   Bs[dotIdx * BLOCKSIZE + threadCol];
+            sum += As[threadRow * BLOCKSIZE + dotIdx] * Bs[dotIdx * BLOCKSIZE + threadCol];
         }
         __syncthreads();
     }
-    C[threadRow * N + threadCol] = alpha * tmp + beta * C[threadRow * N + threadCol];
+    C[threadRow * N + threadCol] = sum * alpha + beta * C[threadRow * N + threadCol];
 }
 
 void run_sgemm_shmem_cache_blocking(int M, int N, int K,
@@ -240,24 +241,25 @@ int main()
     }
     CUDA_CHECK(cudaSetDevice(deviceIdx));
     std::cout << "Running on device " << deviceIdx << "\n";
-
     cublasHandle_t handle;
     CUBLAS_CHECK(cublasCreate(&handle));
-
-    std::vector<int> sizes = {128, 256, 512, 1024};
+    std::vector<int> sizes = {128,256,512,1024};
     int max_size = sizes.back();
     size_t max_bytes = sizeof(float) * max_size * max_size;
-
     std::vector<float> A(max_size * max_size);
     std::vector<float> B(max_size * max_size);
-    std::vector<float> C(max_size * max_size);
-    std::vector<float> C_ref = C;
-
+    std::vector<float> C0(max_size * max_size);
+    std::vector<float> C_ref(max_size * max_size);
+    std::vector<float> C_naive(max_size * max_size);
+    std::vector<float> C_coal(max_size * max_size);
+    std::vector<float> C_shared(max_size * max_size);
     randomizeMatrix(A.data(), A.size());
     randomizeMatrix(B.data(), B.size());
-    rangeInitMatrix(C.data(), C.size());
-    C_ref = C;
-
+    rangeInitMatrix(C0.data(), C0.size());
+    C_ref = C0;
+    C_naive = C0;
+    C_coal = C0;
+    C_shared = C0;
     float* dA;
     float* dB;
     float* dC;
@@ -266,51 +268,46 @@ int main()
     CUDA_CHECK(cudaMalloc(&dC, max_bytes));
     CUDA_CHECK(cudaMemcpy(dA, A.data(), max_bytes, cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(dB, B.data(), max_bytes, cudaMemcpyHostToDevice));
-
     float alpha = 2.0f;
     float beta  = 3.0f;
-
     {
         int M = sizes[0];
         int N = M;
         int K = M;
-
-        CUDA_CHECK(cudaMemcpy(dC, C.data(), sizeof(float) * M * N, cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(dC, C_naive.data(), sizeof(float)*M*N, cudaMemcpyHostToDevice));
         run_sgemm_naive(M, N, K, alpha, dA, dB, beta, dC);
         CUDA_CHECK(cudaDeviceSynchronize());
-        CUDA_CHECK(cudaMemcpy(C.data(), dC, sizeof(float) * M * N, cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(C_naive.data(), dC, sizeof(float)*M*N, cudaMemcpyDeviceToHost));
         run_cublas_sgemm(handle, M, N, K, alpha, A.data(), B.data(), beta, C_ref.data());
-        if (!verifyMatrix(C_ref.data(), C.data(), M, N, error_log_file))
-        {
+        if (!verifyMatrix(C_ref.data(), C_naive.data(), M, N, error_log_file))
+        {  
+            std::cout << "Error with naive\n";
             return 1;
         }
-
-        CUDA_CHECK(cudaMemcpy(dC, C.data(), sizeof(float) * M * N, cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(dC, C_coal.data(), sizeof(float)*M*N, cudaMemcpyHostToDevice));
         run_sgemm_coalesced(M, N, K, alpha, dA, dB, beta, dC);
         CUDA_CHECK(cudaDeviceSynchronize());
-        CUDA_CHECK(cudaMemcpy(C.data(), dC, sizeof(float) * M * N, cudaMemcpyDeviceToHost));
-        if (!verifyMatrix(C_ref.data(), C.data(), M, N, error_log_file))
+        CUDA_CHECK(cudaMemcpy(C_coal.data(), dC, sizeof(float)*M*N, cudaMemcpyDeviceToHost));
+        if (!verifyMatrix(C_ref.data(), C_coal.data(), M, N, error_log_file))
         {
+            std::cout << "Error with coalesced\n";
             return 1;
         }
-
-        CUDA_CHECK(cudaMemcpy(dC, C.data(), sizeof(float) * M * N, cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(dC, C_shared.data(), sizeof(float)*M*N, cudaMemcpyHostToDevice));
         run_sgemm_shmem_cache_blocking(M, N, K, alpha, dA, dB, beta, dC);
         CUDA_CHECK(cudaDeviceSynchronize());
-        CUDA_CHECK(cudaMemcpy(C.data(), dC, sizeof(float) * M * N, cudaMemcpyDeviceToHost));
-        if (!verifyMatrix(C_ref.data(), C.data(), M, N, error_log_file))
+        CUDA_CHECK(cudaMemcpy(C_shared.data(), dC, sizeof(float)*M*N, cudaMemcpyDeviceToHost));
+        if (!verifyMatrix(C_ref.data(), C_shared.data(), M, N, error_log_file))
         {
             std::cout << "Issue with Shmem Cache Blocking Kernel\n";
             return 1;
         }
     }
-
     const int NUM_RUNS = 10;
     cudaEvent_t start;
     cudaEvent_t stop;
     CUDA_CHECK(cudaEventCreate(&start));
     CUDA_CHECK(cudaEventCreate(&stop));
-
     for (int size : sizes)
     {
         int M = size;
@@ -320,10 +317,9 @@ int main()
         float t_coal    = 0.0f;
         float t_cublas  = 0.0f;
         float t_shared  = 0.0f;
-
         for (int i = 0; i < NUM_RUNS; ++i)
         {
-            CUDA_CHECK(cudaMemcpy(dC, C.data(), sizeof(float) * M * N, cudaMemcpyHostToDevice));
+            CUDA_CHECK(cudaMemcpy(dC, C_naive.data(), sizeof(float)*M*N, cudaMemcpyHostToDevice));
             CUDA_CHECK(cudaEventRecord(start));
             run_sgemm_naive(M, N, K, alpha, dA, dB, beta, dC);
             CUDA_CHECK(cudaEventRecord(stop));
@@ -333,8 +329,7 @@ int main()
                 CUDA_CHECK(cudaEventElapsedTime(&ms, start, stop));
                 t_naive += ms;
             }
-
-            CUDA_CHECK(cudaMemcpy(dC, C.data(), sizeof(float) * M * N, cudaMemcpyHostToDevice));
+            CUDA_CHECK(cudaMemcpy(dC, C_coal.data(), sizeof(float)*M*N, cudaMemcpyHostToDevice));
             CUDA_CHECK(cudaEventRecord(start));
             run_sgemm_coalesced(M, N, K, alpha, dA, dB, beta, dC);
             CUDA_CHECK(cudaEventRecord(stop));
@@ -344,8 +339,7 @@ int main()
                 CUDA_CHECK(cudaEventElapsedTime(&ms, start, stop));
                 t_coal += ms;
             }
-
-            CUDA_CHECK(cudaMemcpy(dC, C.data(), sizeof(float) * M * N, cudaMemcpyHostToDevice));
+            CUDA_CHECK(cudaMemcpy(dC, C_ref.data(), sizeof(float)*M*N, cudaMemcpyHostToDevice));
             CUDA_CHECK(cudaEventRecord(start));
             run_cublas_sgemm(handle, M, N, K, alpha, A.data(), B.data(), beta, C_ref.data());
             CUDA_CHECK(cudaEventRecord(stop));
@@ -355,8 +349,7 @@ int main()
                 CUDA_CHECK(cudaEventElapsedTime(&ms, start, stop));
                 t_cublas += ms;
             }
-
-            CUDA_CHECK(cudaMemcpy(dC, C.data(), sizeof(float) * M * N, cudaMemcpyHostToDevice));
+            CUDA_CHECK(cudaMemcpy(dC, C_shared.data(), sizeof(float)*M*N, cudaMemcpyHostToDevice));
             CUDA_CHECK(cudaEventRecord(start));
             run_sgemm_shmem_cache_blocking(M, N, K, alpha, dA, dB, beta, dC);
             CUDA_CHECK(cudaEventRecord(stop));
@@ -367,7 +360,6 @@ int main()
                 t_shared += ms;
             }
         }
-
         std::cout
             << "dim " << size
             << " | naive: "   << (t_naive   / NUM_RUNS) << " ms"
@@ -375,13 +367,11 @@ int main()
             << " | cuBLAS: "  << (t_cublas  / NUM_RUNS) << " ms"
             << " | shared: "  << (t_shared  / NUM_RUNS) << " ms\n";
     }
-
     CUDA_CHECK(cudaFree(dA));
     CUDA_CHECK(cudaFree(dB));
     CUDA_CHECK(cudaFree(dC));
     CUDA_CHECK(cudaEventDestroy(start));
     CUDA_CHECK(cudaEventDestroy(stop));
     CUBLAS_CHECK(cublasDestroy(handle));
-
     return 0;
 }
