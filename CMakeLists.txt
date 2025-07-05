@@ -15,16 +15,14 @@ include_directories(
   ${PROJECT_SOURCE_DIR}/benchmarks
 )
 
-# matmul_runner
-add_executable(matmul_runner
-  benchmarks/matmul_runner.cu
+add_executable(sgemm_benchmark
+  benchmarks/sgemm/sgemm.cu
 )
-target_link_libraries(matmul_runner
+target_link_libraries(sgemm_benchmark
   CUDA::cudart
   CUDA::cublas
 )
 
-# engine/src/main.cu
 add_executable(engine_main
   engine/src/main.cu
 )
