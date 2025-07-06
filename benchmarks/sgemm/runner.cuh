@@ -87,9 +87,10 @@ void runSgemm1DBlocktiling(int M, int N, int K, float alpha, float *A, float *B,
   const uint BN = 64;
   const uint BK = 8;
   const uint TM = 8;
+
   dim3 gridDim(CEIL_DIV(N, BN), CEIL_DIV(M, BM));
   dim3 blockDim((BM * BN) / TM);
+  
   sgemm_1d_block_tiling<BM, BN, BK, TM>
       <<<gridDim, blockDim>>>(M, N, K, alpha, A, B, beta, C);
 }
-

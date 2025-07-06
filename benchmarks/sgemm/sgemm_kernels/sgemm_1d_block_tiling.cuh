@@ -7,9 +7,9 @@ __global__ void sgemm_1d_block_tiling(
     int M,
     int N,
     int K,
+    float alpha,
     float *A,
     float *B,
-    float alpha,
     float beta,
     float *C
 )
@@ -17,26 +17,26 @@ __global__ void sgemm_1d_block_tiling(
     __shared__ float As[BM * BK];
     __shared__ float Bs[BK * BN];
 
+    float thread_results[TM] = {0.0};
+
     const uint threadRow = threadIdx.x / BN;
     const uint threadCol = threadIdx.x % BN;
 
     const uint cRow = blockIdx.y;
     const uint cCol = blockIdx.x;
 
-    // Move to start of A row and B col
     A += cRow * BM * K;
     B += cCol * BN;
     C += cRow * BM * N + cCol * BN;
 
-    assert(BM * BK == blockDim.x);
-    assert(BN * BK == blockDim.x);
-
-    const uint innerColA = threadIdx.x % BK; // warp-level GMEM coalescing
     const uint innerRowA = threadIdx.x / BK;
-    const uint innerColB = threadIdx.x % BN; // warp-level GMEM coalescing
-    const uint innerRowB = threadIdx.x / BN;
+    const uint innerColA = threadIdx.x % BK;
 
-    float thread_results[TM] = {0.0f};
+    const uint innerRowB = threadIdx.x / BN;
+    const uint innerColB = threadIdx.x % BN;
+
+    assert(BM * BK == blockDim.x);
+    assert(BK * BN == blockDim.x);
 
     for (uint i = 0; i < K; i += BK)
     {
@@ -51,6 +51,7 @@ __global__ void sgemm_1d_block_tiling(
         for (uint dotIdx = 0; dotIdx < BK; ++dotIdx)
         {
             float tempB = Bs[dotIdx * BN + threadCol];
+
             for (uint resIdx = 0; resIdx < TM; ++resIdx)
             {
                 // local tile row then column within the tile
@@ -60,11 +61,9 @@ __global__ void sgemm_1d_block_tiling(
 
         __syncthreads();
     }
-
+    
     for (uint resIdx = 0; resIdx < TM; ++resIdx)
     {
-        C[(threadRow * TM + resIdx) * N + threadCol] =
-            alpha * thread_results[resIdx] +
-            beta * C[(threadRow * TM + resIdx) * N + threadCol];
+        C[(threadRow * TM + resIdx) * N + threadCol] = alpha * thread_results[resIdx] + beta * C[(threadRow * TM + resIdx) * N + threadCol];
     }
 }
